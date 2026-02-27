@@ -65,6 +65,10 @@ class AmazonAdsClient:
             headers=self.auth.get_headers_no_scope(),
             timeout=30,
         )
+        if not resp.ok:
+            logger.error(
+                f"GET /v2/profiles returned {resp.status_code}: {resp.text!r}"
+            )
         resp.raise_for_status()
         return resp.json()
 
