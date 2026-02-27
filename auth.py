@@ -51,3 +51,15 @@ class AmazonAdsAuth:
             "Amazon-Advertising-API-Scope": Config.PROFILE_ID,
             "Content-Type": "application/json",
         }
+
+    def get_headers_no_scope(self) -> dict:
+        """Return headers without Amazon-Advertising-API-Scope.
+
+        The /v2/profiles endpoint must NOT receive a scope header – it is the
+        bootstrap call used to discover which profile IDs are available.
+        """
+        return {
+            "Authorization": f"Bearer {self.get_access_token()}",
+            "Amazon-Advertising-API-ClientId": Config.CLIENT_ID,
+            "Content-Type": "application/json",
+        }

@@ -55,10 +55,14 @@ class AmazonAdsClient:
     # ── Profile discovery ───────────────────────────────────────────────────
 
     def list_profiles(self) -> list[dict]:
-        """Return all profiles; useful to find the SA profile ID."""
+        """Return all profiles; useful to find the SA profile ID.
+
+        Uses headers without Amazon-Advertising-API-Scope because /v2/profiles
+        is the bootstrap endpoint – no profile ID is required (or allowed).
+        """
         resp = requests.get(
             f"{self.base_url}/v2/profiles",
-            headers=self.auth.get_headers(),
+            headers=self.auth.get_headers_no_scope(),
             timeout=30,
         )
         resp.raise_for_status()
