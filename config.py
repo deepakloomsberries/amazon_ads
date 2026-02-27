@@ -16,7 +16,7 @@ class Config:
     # ── Amazon Ads API ──────────────────────────────────────────────────────
     # Saudi Arabia is served by the EU region endpoint
     ADS_REGION = os.getenv("AMAZON_ADS_REGION", "eu")
-    PROFILE_ID = os.environ["AMAZON_PROFILE_ID"]
+    PROFILE_ID = os.getenv("AMAZON_PROFILE_ID", "")  # optional until discovered via --list-profiles
     MARKETPLACE_ID = os.getenv("AMAZON_MARKETPLACE_ID", "A17E79C6D8DWNP")  # SA
 
     API_BASE_URLS = {
