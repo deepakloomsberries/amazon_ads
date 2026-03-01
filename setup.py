@@ -69,11 +69,19 @@ def read_env() -> dict:
 
 def step_credentials() -> tuple[str, str]:
     print_step(1, "Amazon Developer App Credentials")
-    print("  Find these at: https://advertising.amazon.com/API/docs/en-us/getting-started/create-authorization-grant\n")
 
     env = read_env()
-    client_id = ask("Client ID", env.get("AMAZON_CLIENT_ID", ""))
-    client_secret = ask("Client Secret", env.get("AMAZON_CLIENT_SECRET", ""))
+    client_id = env.get("AMAZON_CLIENT_ID", "").strip()
+    client_secret = env.get("AMAZON_CLIENT_SECRET", "").strip()
+
+    if client_id and client_secret:
+        print_ok(f"Credentials already in .env — skipping prompts.")
+        print(f"  Client ID: {client_id}")
+        return client_id, client_secret
+
+    print("  Find these at: https://advertising.amazon.com/API/docs/en-us/getting-started/create-authorization-grant\n")
+    client_id = ask("Client ID", client_id)
+    client_secret = ask("Client Secret", client_secret)
 
     if not client_id or not client_secret:
         print_err("Client ID and Client Secret are required.")
@@ -94,9 +102,10 @@ def step_oauth(client_id: str, client_secret: str) -> str:
     # The user opens the auth URL in any browser; after Allow they land on amazon.com
     # with ?code=... in the address bar. They copy that URL and paste it here.
     print(f"  IMPORTANT: In your Amazon Developer app (LWA Web Settings) make sure")
-    print(f"  this URL is in Allowed Return URLs:\n")
-    print(f"      {REDIRECT_URI_SIMPLE}\n")
-    input("  Press ENTER when you've added the return URL and are ready to continue …")
+    print(f"  this URL is in Allowed Return URLs:")
+    print(f"      {REDIRECT_URI_SIMPLE}")
+    print(f"  (If already added, just press ENTER to continue)")
+    input("\n  Press ENTER when ready …")
 
     redirect_uri = REDIRECT_URI_SIMPLE
     auth_url = (
