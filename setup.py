@@ -12,9 +12,6 @@ Usage:
 import os
 import sys
 import json
-import threading
-import webbrowser
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 
 import requests
@@ -24,9 +21,10 @@ ENV_FILE = os.path.join(os.path.dirname(__file__), ".env")
 ENV_EXAMPLE = os.path.join(os.path.dirname(__file__), ".env.example")
 
 REDIRECT_PORT = 9090
-REDIRECT_URI = f"http://localhost:{REDIRECT_PORT}/callback"
+REDIRECT_URI_LOCAL = f"http://localhost:{REDIRECT_PORT}/callback"
+REDIRECT_URI_SIMPLE = "https://amazon.com"
 TOKEN_URL = "https://api.amazon.com/auth/o2/token"
-AUTH_URL = "https://www.amazon.com/ap/oa"
+AUTH_URL = "https://eu.account.amazon.com/ap/oa"  # EU/ME region (SA uses EU endpoint)
 SCOPE = "advertising::campaign_management"
 ADS_EU_BASE = "https://advertising-api-eu.amazon.com"
 
@@ -71,11 +69,19 @@ def read_env() -> dict:
 
 def step_credentials() -> tuple[str, str]:
     print_step(1, "Amazon Developer App Credentials")
-    print("  Find these at: https://advertising.amazon.com/API/docs/en-us/getting-started/create-authorization-grant\n")
 
     env = read_env()
-    client_id = ask("Client ID", env.get("AMAZON_CLIENT_ID", ""))
-    client_secret = ask("Client Secret", env.get("AMAZON_CLIENT_SECRET", ""))
+    client_id = env.get("AMAZON_CLIENT_ID", "").strip()
+    client_secret = env.get("AMAZON_CLIENT_SECRET", "").strip()
+
+    if client_id and client_secret:
+        print_ok(f"Credentials already in .env — skipping prompts.")
+        print(f"  Client ID: {client_id}")
+        return client_id, client_secret
+
+    print("  Find these at: https://advertising.amazon.com/API/docs/en-us/getting-started/create-authorization-grant\n")
+    client_id = ask("Client ID", client_id)
+    client_secret = ask("Client Secret", client_secret)
 
     if not client_id or not client_secret:
         print_err("Client ID and Client Secret are required.")
@@ -87,99 +93,47 @@ def step_credentials() -> tuple[str, str]:
     return client_id, client_secret
 
 
-# ── Step 2: OAuth flow (browser + local server) ──────────────────────────────
-
-class _OAuthHandler(BaseHTTPRequestHandler):
-    auth_code = None
-    error = None
-
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        params = parse_qs(parsed.query)
-
-        if "code" in params:
-            _OAuthHandler.auth_code = params["code"][0]
-            self._respond("Authorization successful! You can close this tab and return to the terminal.")
-        elif "error" in params:
-            _OAuthHandler.error = params.get("error_description", ["Unknown error"])[0]
-            self._respond(f"Authorization failed: {_OAuthHandler.error}")
-        else:
-            self._respond("Waiting …")
-
-    def _respond(self, message: str):
-        body = f"<html><body style='font-family:sans-serif;padding:40px'><h2>{message}</h2></body></html>"
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html")
-        self.end_headers()
-        self.wfile.write(body.encode())
-
-    def log_message(self, *args):
-        pass  # suppress server logs
-
+# ── Step 2: OAuth flow ───────────────────────────────────────────────────────
 
 def step_oauth(client_id: str, client_secret: str) -> str:
     print_step(2, "Amazon LWA OAuth – Getting Refresh Token")
-    print(f"  IMPORTANT: In your Amazon Developer app, make sure this Redirect URL is added:")
-    print(f"\n      {REDIRECT_URI}\n")
-    input("  Press ENTER when you've added the redirect URL and are ready to continue …")
 
+    # Use simple redirect (https://amazon.com) by default — works on headless servers.
+    # The user opens the auth URL in any browser; after Allow they land on amazon.com
+    # with ?code=... in the address bar. They copy that URL and paste it here.
+    print(f"  IMPORTANT: In your Amazon Developer app (LWA Web Settings) make sure")
+    print(f"  this URL is in Allowed Return URLs:")
+    print(f"      {REDIRECT_URI_SIMPLE}")
+    print(f"  (If already added, just press ENTER to continue)")
+    input("\n  Press ENTER when ready …")
+
+    redirect_uri = REDIRECT_URI_SIMPLE
     auth_url = (
         f"{AUTH_URL}?client_id={client_id}"
         f"&scope={SCOPE}"
         f"&response_type=code"
-        f"&redirect_uri={REDIRECT_URI}"
+        f"&redirect_uri={redirect_uri}"
     )
 
-    # Try to start local HTTP server; fall back to manual URL-paste for headless servers
-    auth_code = None
-    try:
-        server = HTTPServer(("localhost", REDIRECT_PORT), _OAuthHandler)
-        thread = threading.Thread(target=server.handle_request)
-        thread.daemon = True
-        thread.start()
+    print(f"\n  Open this URL in any browser (laptop, phone, etc.):")
+    print(f"\n  {auth_url}\n")
+    print(f"  Sign in with the Amazon account that owns the Ads account.")
+    print(f"  Click Allow on the consent screen.")
+    print(f"  You will land on amazon.com — copy the FULL URL from your address bar.")
+    print(f"  It will look like:  https://www.amazon.com/?code=ANxxxxx&scope=advertising...\n")
 
-        print(f"\n  Opening your browser for Amazon login …")
-        print(f"  (If it doesn't open, paste this URL manually:\n   {auth_url})\n")
-        webbrowser.open(auth_url)
+    redirect_url = input("  Paste the full redirect URL here: ").strip()
+    params = parse_qs(urlparse(redirect_url).query)
 
-        print("  Waiting for Amazon to redirect back …")
-        thread.join(timeout=120)
-        server.server_close()
+    if "error" in params:
+        print_err(f"Authorization failed: {params.get('error_description', ['Unknown error'])[0]}")
+        sys.exit(1)
 
-        if _OAuthHandler.error:
-            print_err(f"OAuth failed: {_OAuthHandler.error}")
-            sys.exit(1)
+    if "code" not in params:
+        print_err("No authorization code found. Make sure you copied the full URL from the address bar.")
+        sys.exit(1)
 
-        if not _OAuthHandler.auth_code:
-            print_err("No authorization code received within 2 minutes. Did you complete the login?")
-            sys.exit(1)
-
-        auth_code = _OAuthHandler.auth_code
-
-    except OSError:
-        # Port unavailable (e.g. nginx on this port) – fall back to manual copy-paste flow
-        print(f"\n  \033[1;33m[!] Could not bind to port {REDIRECT_PORT} (already in use).\033[0m")
-        print("  Running in MANUAL mode instead.\n")
-        print("  ┌─ Open this URL in a browser (on any machine):")
-        print(f"  │  {auth_url}")
-        print("  │")
-        print(f"  │  After authorizing, Amazon redirects to {REDIRECT_URI}?code=...")
-        print("  │  The page will fail to load — that's OK.")
-        print("  └─ Copy the FULL URL from your browser's address bar and paste it below.\n")
-
-        redirect_url = input("  Paste the redirect URL here: ").strip()
-        params = parse_qs(urlparse(redirect_url).query)
-
-        if "error" in params:
-            print_err(f"Authorization failed: {params.get('error_description', ['Unknown error'])[0]}")
-            sys.exit(1)
-
-        if "code" not in params:
-            print_err("No authorization code in URL. Make sure you copied the full redirect URL.")
-            sys.exit(1)
-
-        auth_code = params["code"][0]
-
+    auth_code = params["code"][0]
     print_ok("Authorization code received. Exchanging for refresh token …")
 
     resp = requests.post(
@@ -187,7 +141,7 @@ def step_oauth(client_id: str, client_secret: str) -> str:
         data={
             "grant_type": "authorization_code",
             "code": auth_code,
-            "redirect_uri": REDIRECT_URI,
+            "redirect_uri": redirect_uri,
             "client_id": client_id,
             "client_secret": client_secret,
         },
