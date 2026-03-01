@@ -32,7 +32,15 @@ class Config:
         return cls.API_BASE_URLS[cls.ADS_REGION]
 
     # ── BigQuery ────────────────────────────────────────────────────────────
-    BQ_CREDENTIALS_PATH = os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
+    _raw_bq_creds = os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
+    BQ_CREDENTIALS_PATH = os.path.abspath(os.path.expanduser(_raw_bq_creds))
+    if not os.path.isfile(BQ_CREDENTIALS_PATH):
+        raise FileNotFoundError(
+            f"BigQuery credentials file not found: '{BQ_CREDENTIALS_PATH}'. "
+            f"Ensure GOOGLE_APPLICATION_CREDENTIALS is set to an absolute path "
+            f"(e.g. /home/kapil/selenium_data/watchful-slice-...json). "
+            f"Current value: '{_raw_bq_creds}'"
+        )
     BQ_PROJECT_ID = os.environ["BQ_PROJECT_ID"]
     BQ_DATASET_ID = os.getenv("BQ_DATASET_ID", "amazon_ads_sa")
 
