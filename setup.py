@@ -23,7 +23,7 @@ from dotenv import dotenv_values, set_key
 ENV_FILE = os.path.join(os.path.dirname(__file__), ".env")
 ENV_EXAMPLE = os.path.join(os.path.dirname(__file__), ".env.example")
 
-REDIRECT_PORT = 8080
+REDIRECT_PORT = 9090
 REDIRECT_URI = f"http://localhost:{REDIRECT_PORT}/callback"
 TOKEN_URL = "https://api.amazon.com/auth/o2/token"
 AUTH_URL = "https://www.amazon.com/ap/oa"
@@ -130,27 +130,55 @@ def step_oauth(client_id: str, client_secret: str) -> str:
         f"&redirect_uri={REDIRECT_URI}"
     )
 
-    # Start local HTTP server in a background thread
-    server = HTTPServer(("localhost", REDIRECT_PORT), _OAuthHandler)
-    thread = threading.Thread(target=server.handle_request)
-    thread.daemon = True
-    thread.start()
+    # Try to start local HTTP server; fall back to manual URL-paste for headless servers
+    auth_code = None
+    try:
+        server = HTTPServer(("localhost", REDIRECT_PORT), _OAuthHandler)
+        thread = threading.Thread(target=server.handle_request)
+        thread.daemon = True
+        thread.start()
 
-    print(f"\n  Opening your browser for Amazon login …")
-    print(f"  (If it doesn't open, paste this URL manually:\n   {auth_url})\n")
-    webbrowser.open(auth_url)
+        print(f"\n  Opening your browser for Amazon login …")
+        print(f"  (If it doesn't open, paste this URL manually:\n   {auth_url})\n")
+        webbrowser.open(auth_url)
 
-    print("  Waiting for Amazon to redirect back …")
-    thread.join(timeout=120)
-    server.server_close()
+        print("  Waiting for Amazon to redirect back …")
+        thread.join(timeout=120)
+        server.server_close()
 
-    if _OAuthHandler.error:
-        print_err(f"OAuth failed: {_OAuthHandler.error}")
-        sys.exit(1)
+        if _OAuthHandler.error:
+            print_err(f"OAuth failed: {_OAuthHandler.error}")
+            sys.exit(1)
 
-    if not _OAuthHandler.auth_code:
-        print_err("No authorization code received within 2 minutes. Did you complete the login?")
-        sys.exit(1)
+        if not _OAuthHandler.auth_code:
+            print_err("No authorization code received within 2 minutes. Did you complete the login?")
+            sys.exit(1)
+
+        auth_code = _OAuthHandler.auth_code
+
+    except OSError:
+        # Port unavailable (e.g. nginx on this port) – fall back to manual copy-paste flow
+        print(f"\n  \033[1;33m[!] Could not bind to port {REDIRECT_PORT} (already in use).\033[0m")
+        print("  Running in MANUAL mode instead.\n")
+        print("  ┌─ Open this URL in a browser (on any machine):")
+        print(f"  │  {auth_url}")
+        print("  │")
+        print(f"  │  After authorizing, Amazon redirects to {REDIRECT_URI}?code=...")
+        print("  │  The page will fail to load — that's OK.")
+        print("  └─ Copy the FULL URL from your browser's address bar and paste it below.\n")
+
+        redirect_url = input("  Paste the redirect URL here: ").strip()
+        params = parse_qs(urlparse(redirect_url).query)
+
+        if "error" in params:
+            print_err(f"Authorization failed: {params.get('error_description', ['Unknown error'])[0]}")
+            sys.exit(1)
+
+        if "code" not in params:
+            print_err("No authorization code in URL. Make sure you copied the full redirect URL.")
+            sys.exit(1)
+
+        auth_code = params["code"][0]
 
     print_ok("Authorization code received. Exchanging for refresh token …")
 
@@ -158,7 +186,7 @@ def step_oauth(client_id: str, client_secret: str) -> str:
         TOKEN_URL,
         data={
             "grant_type": "authorization_code",
-            "code": _OAuthHandler.auth_code,
+            "code": auth_code,
             "redirect_uri": REDIRECT_URI,
             "client_id": client_id,
             "client_secret": client_secret,
