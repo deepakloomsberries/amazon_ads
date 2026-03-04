@@ -90,16 +90,25 @@ class AmazonAdsClient:
         "SPONSORED_DISPLAY":  "sdCampaigns",
     }
 
+    # sbCampaigns / sdCampaigns only support groupBy=["campaign"];
+    # only spCampaigns supports adGroup-level grouping.
+    GROUP_BY = {
+        "SPONSORED_PRODUCTS": ["campaign", "adGroup"],
+        "SPONSORED_BRANDS":   ["campaign"],
+        "SPONSORED_DISPLAY":  ["campaign"],
+    }
+
     def _request_report(self, ad_type: str, report_date: str, metrics: list[str]) -> str:
         """Submit a report request and return the requestId."""
         report_type_id = self.REPORT_TYPE_IDS.get(ad_type, "spCampaigns")
+        group_by = self.GROUP_BY.get(ad_type, ["campaign"])
         payload = {
             "name": f"{ad_type} report {report_date}",
             "startDate": report_date,
             "endDate": report_date,
             "configuration": {
                 "adProduct": ad_type,           # SPONSORED_PRODUCTS | SPONSORED_BRANDS | SPONSORED_DISPLAY
-                "groupBy": ["campaign", "adGroup"],
+                "groupBy": group_by,
                 "columns": metrics,
                 "reportTypeId": report_type_id,
                 "timeUnit": "DAILY",
@@ -153,21 +162,25 @@ class AmazonAdsClient:
                 row["spend"] = row.pop("cost")
             if "campaignBudgetAmount" in row:
                 row["campaignBudget"] = row.pop("campaignBudgetAmount")
+            # SP: attributed metrics carry a window suffix
             if "purchases7d" in row:
                 row["orders7d"] = row.pop("purchases7d")
-            if "purchases14d" in row:
-                row["orders14d"] = row.pop("purchases14d")
-            if "startDate" in row:
-                row["date"] = row.pop("startDate")
+            # SB/SD: campaign-level metrics use plain names (no window suffix)
+            if "sales" in row:
+                row["sales14d"] = row.pop("sales")
+            if "purchases" in row:
+                row["orders14d"] = row.pop("purchases")
+            if "unitsSoldClicks" in row:
+                row["unitsSoldClicks14d"] = row.pop("unitsSoldClicks")
 
-            # Compute derived metrics (ACOS / ROAS) from raw values
+            # Compute derived metrics (ACOS / ROAS) – scoped per ad type
             spend = row.get("spend") or 0
-            sales7d = row.get("sales7d") or 0
-            sales14d = row.get("sales14d") or 0
-            if "orders7d" in row:   # SP report
+            if ad_type == "SPONSORED_PRODUCTS":
+                sales7d = row.get("sales7d") or 0
                 row["acos7d"] = round(spend / sales7d, 4) if sales7d else None
                 row["roas7d"] = round(sales7d / spend, 4) if spend else None
-            if "orders14d" in row:  # SB / SD report
+            elif ad_type == "SPONSORED_BRANDS":
+                sales14d = row.get("sales14d") or 0
                 row["acos14d"] = round(spend / sales14d, 4) if sales14d else None
                 row["roas14d"] = round(sales14d / spend, 4) if spend else None
 
@@ -176,28 +189,29 @@ class AmazonAdsClient:
     # ── Convenience methods for each ad type ───────────────────────────────
 
     # Columns requested from the Amazon Ads API v3 (use API names, not BQ schema names).
-    # cost → spend, campaignBudgetAmount → campaignBudget, purchases* → orders*,
-    # startDate → date  (renaming happens in fetch_report).
+    # cost → spend, campaignBudgetAmount → campaignBudget, purchases* → orders*  (renamed in fetch_report).
+    # "date" is the correct column for timeUnit=DAILY (not startDate/endDate).
     # acos/roas are derived; not returned by the API directly.
     SP_METRICS = [
         "campaignId", "campaignName", "campaignStatus", "campaignBudgetAmount",
         "adGroupId", "adGroupName",
         "impressions", "clicks", "cost", "sales7d", "purchases7d",
-        "unitsSoldClicks7d", "startDate",
+        "unitsSoldClicks7d", "date",
     ]
 
+    # sbCampaigns: campaign-level only; metrics have no attribution-window suffix.
+    # sales→sales14d, purchases→orders14d, unitsSoldClicks→unitsSoldClicks14d (renamed in fetch_report).
     SB_METRICS = [
-        "campaignId", "campaignName", "campaignStatus",
-        "adGroupId", "adGroupName",
-        "impressions", "clicks", "cost", "sales14d", "purchases14d",
-        "unitsSoldClicks14d", "startDate",
+        "campaignId", "campaignName", "campaignStatus", "campaignBudgetAmount",
+        "impressions", "clicks", "cost", "sales", "purchases",
+        "unitsSoldClicks", "date",
     ]
 
+    # sdCampaigns: same campaign-level restriction as SB.
     SD_METRICS = [
-        "campaignId", "campaignName", "campaignStatus",
-        "adGroupId", "adGroupName",
-        "impressions", "clicks", "cost", "sales14d", "purchases14d",
-        "startDate",
+        "campaignId", "campaignName", "campaignStatus", "campaignBudgetAmount",
+        "impressions", "clicks", "cost", "sales", "purchases",
+        "date",
     ]
 
     def fetch_sponsored_products(self, report_date: str) -> list[dict]:

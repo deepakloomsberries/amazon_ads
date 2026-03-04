@@ -41,6 +41,7 @@ SPONSORED_BRANDS_SCHEMA = [
     bigquery.SchemaField("campaignId", "STRING"),
     bigquery.SchemaField("campaignName", "STRING"),
     bigquery.SchemaField("campaignStatus", "STRING"),
+    bigquery.SchemaField("campaignBudget", "FLOAT64"),
     bigquery.SchemaField("adGroupId", "STRING"),
     bigquery.SchemaField("adGroupName", "STRING"),
     bigquery.SchemaField("impressions", "INT64"),
@@ -62,6 +63,7 @@ SPONSORED_DISPLAY_SCHEMA = [
     bigquery.SchemaField("campaignId", "STRING"),
     bigquery.SchemaField("campaignName", "STRING"),
     bigquery.SchemaField("campaignStatus", "STRING"),
+    bigquery.SchemaField("campaignBudget", "FLOAT64"),
     bigquery.SchemaField("adGroupId", "STRING"),
     bigquery.SchemaField("adGroupName", "STRING"),
     bigquery.SchemaField("impressions", "INT64"),
@@ -120,8 +122,11 @@ class BigQueryLoader:
     def _ensure_table(self, table_name: str, schema: list, partition_field: str):
         table_ref = f"{Config.BQ_PROJECT_ID}.{self.dataset_id}.{table_name}"
         try:
-            self.client.get_table(table_ref)
-            logger.info(f"Table '{table_name}' already exists.")
+            existing = self.client.get_table(table_ref)
+            # Push schema changes (BQ allows adding nullable fields to existing tables)
+            existing.schema = schema
+            self.client.update_table(existing, ["schema"])
+            logger.info(f"Table '{table_name}' already exists (schema synced).")
         except Exception:
             table = bigquery.Table(table_ref, schema=schema)
             table.time_partitioning = bigquery.TimePartitioning(
@@ -161,6 +166,13 @@ class BigQueryLoader:
 
         df = pd.DataFrame(records)
 
+        # Add any schema columns absent from the data as null columns,
+        # so load_table_from_dataframe doesn't reject a partial DataFrame
+        # (e.g. adGroupId/adGroupName are absent for SB/SD campaign-level reports).
+        for field in schema:
+            if field.name not in df.columns:
+                df[field.name] = None
+
         # Cast date columns
         for col in ["report_date", "date"]:
             if col in df.columns:
@@ -174,11 +186,16 @@ class BigQueryLoader:
                 df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype("int64")
             elif bq_type == "FLOAT64":
                 df[col] = pd.to_numeric(df[col], errors="coerce")
+            elif bq_type == "STRING":
+                # API returns IDs (campaignId, adGroupId, etc.) as integers;
+                # cast to str while preserving nulls.
+                df[col] = df[col].where(df[col].isna(), df[col].astype(str))
 
         table_ref = f"{Config.BQ_PROJECT_ID}.{self.dataset_id}.{table_name}"
         job_config = bigquery.LoadJobConfig(
             schema=schema,
             write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+            schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION],
         )
 
         job = self.client.load_table_from_dataframe(df, table_ref, job_config=job_config)
