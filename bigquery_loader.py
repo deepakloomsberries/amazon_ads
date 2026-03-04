@@ -161,6 +161,13 @@ class BigQueryLoader:
 
         df = pd.DataFrame(records)
 
+        # Add any schema columns absent from the data as null columns,
+        # so load_table_from_dataframe doesn't reject a partial DataFrame
+        # (e.g. adGroupId/adGroupName are absent for SB/SD campaign-level reports).
+        for field in schema:
+            if field.name not in df.columns:
+                df[field.name] = None
+
         # Cast date columns
         for col in ["report_date", "date"]:
             if col in df.columns:
