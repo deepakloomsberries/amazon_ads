@@ -174,6 +174,10 @@ class BigQueryLoader:
                 df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype("int64")
             elif bq_type == "FLOAT64":
                 df[col] = pd.to_numeric(df[col], errors="coerce")
+            elif bq_type == "STRING":
+                # API returns IDs (campaignId, adGroupId, etc.) as integers;
+                # cast to str while preserving nulls.
+                df[col] = df[col].where(df[col].isna(), df[col].astype(str))
 
         table_ref = f"{Config.BQ_PROJECT_ID}.{self.dataset_id}.{table_name}"
         job_config = bigquery.LoadJobConfig(
