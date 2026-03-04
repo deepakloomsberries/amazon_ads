@@ -41,6 +41,7 @@ SPONSORED_BRANDS_SCHEMA = [
     bigquery.SchemaField("campaignId", "STRING"),
     bigquery.SchemaField("campaignName", "STRING"),
     bigquery.SchemaField("campaignStatus", "STRING"),
+    bigquery.SchemaField("campaignBudget", "FLOAT64"),
     bigquery.SchemaField("adGroupId", "STRING"),
     bigquery.SchemaField("adGroupName", "STRING"),
     bigquery.SchemaField("impressions", "INT64"),
@@ -62,6 +63,7 @@ SPONSORED_DISPLAY_SCHEMA = [
     bigquery.SchemaField("campaignId", "STRING"),
     bigquery.SchemaField("campaignName", "STRING"),
     bigquery.SchemaField("campaignStatus", "STRING"),
+    bigquery.SchemaField("campaignBudget", "FLOAT64"),
     bigquery.SchemaField("adGroupId", "STRING"),
     bigquery.SchemaField("adGroupName", "STRING"),
     bigquery.SchemaField("impressions", "INT64"),
@@ -120,8 +122,11 @@ class BigQueryLoader:
     def _ensure_table(self, table_name: str, schema: list, partition_field: str):
         table_ref = f"{Config.BQ_PROJECT_ID}.{self.dataset_id}.{table_name}"
         try:
-            self.client.get_table(table_ref)
-            logger.info(f"Table '{table_name}' already exists.")
+            existing = self.client.get_table(table_ref)
+            # Push schema changes (BQ allows adding nullable fields to existing tables)
+            existing.schema = schema
+            self.client.update_table(existing, ["schema"])
+            logger.info(f"Table '{table_name}' already exists (schema synced).")
         except Exception:
             table = bigquery.Table(table_ref, schema=schema)
             table.time_partitioning = bigquery.TimePartitioning(
@@ -190,6 +195,7 @@ class BigQueryLoader:
         job_config = bigquery.LoadJobConfig(
             schema=schema,
             write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+            schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION],
         )
 
         job = self.client.load_table_from_dataframe(df, table_ref, job_config=job_config)
