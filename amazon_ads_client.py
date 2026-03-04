@@ -157,9 +157,6 @@ class AmazonAdsClient:
                 row["orders7d"] = row.pop("purchases7d")
             if "purchases14d" in row:
                 row["orders14d"] = row.pop("purchases14d")
-            if "startDate" in row:
-                row["date"] = row.pop("startDate")
-
             # Compute derived metrics (ACOS / ROAS) from raw values
             spend = row.get("spend") or 0
             sales7d = row.get("sales7d") or 0
@@ -176,28 +173,28 @@ class AmazonAdsClient:
     # ── Convenience methods for each ad type ───────────────────────────────
 
     # Columns requested from the Amazon Ads API v3 (use API names, not BQ schema names).
-    # cost → spend, campaignBudgetAmount → campaignBudget, purchases* → orders*,
-    # startDate → date  (renaming happens in fetch_report).
+    # cost → spend, campaignBudgetAmount → campaignBudget, purchases* → orders*  (renamed in fetch_report).
+    # "date" is the correct column for timeUnit=DAILY (not startDate/endDate).
     # acos/roas are derived; not returned by the API directly.
     SP_METRICS = [
         "campaignId", "campaignName", "campaignStatus", "campaignBudgetAmount",
         "adGroupId", "adGroupName",
         "impressions", "clicks", "cost", "sales7d", "purchases7d",
-        "unitsSoldClicks7d", "startDate",
+        "unitsSoldClicks7d", "date",
     ]
 
     SB_METRICS = [
         "campaignId", "campaignName", "campaignStatus",
         "adGroupId", "adGroupName",
         "impressions", "clicks", "cost", "sales14d", "purchases14d",
-        "unitsSoldClicks14d", "startDate",
+        "unitsSoldClicks14d", "date",
     ]
 
     SD_METRICS = [
         "campaignId", "campaignName", "campaignStatus",
         "adGroupId", "adGroupName",
         "impressions", "clicks", "cost", "sales14d", "purchases14d",
-        "startDate",
+        "date",
     ]
 
     def fetch_sponsored_products(self, report_date: str) -> list[dict]:
