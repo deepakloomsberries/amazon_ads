@@ -39,6 +39,8 @@ class AmazonAdsClient:
             json=payload,
             timeout=60,
         )
+        if not resp.ok:
+            logger.error(f"POST {path} returned {resp.status_code}: {resp.text!r}")
         resp.raise_for_status()
         return resp.json()
 
@@ -81,8 +83,16 @@ class AmazonAdsClient:
 
     # ── Reporting v3 (async) ────────────────────────────────────────────────
 
+    # Maps adProduct → the correct reportTypeId for the campaign-level report
+    REPORT_TYPE_IDS = {
+        "SPONSORED_PRODUCTS": "spCampaigns",
+        "SPONSORED_BRANDS":   "sbCampaigns",
+        "SPONSORED_DISPLAY":  "sdCampaigns",
+    }
+
     def _request_report(self, ad_type: str, report_date: str, metrics: list[str]) -> str:
         """Submit a report request and return the requestId."""
+        report_type_id = self.REPORT_TYPE_IDS.get(ad_type, "spCampaigns")
         payload = {
             "name": f"{ad_type} report {report_date}",
             "startDate": report_date,
@@ -91,7 +101,7 @@ class AmazonAdsClient:
                 "adProduct": ad_type,           # SPONSORED_PRODUCTS | SPONSORED_BRANDS | SPONSORED_DISPLAY
                 "groupBy": ["campaign", "adGroup"],
                 "columns": metrics,
-                "reportTypeId": "spCampaigns",
+                "reportTypeId": report_type_id,
                 "timeUnit": "DAILY",
                 "format": "GZIP_JSON",
             },
@@ -131,37 +141,63 @@ class AmazonAdsClient:
         request_id = self._request_report(ad_type, report_date, metrics)
         download_url = self._poll_report(request_id)
         records = self._download_report(download_url)
-        # Tag every row with metadata
+        # Tag every row with metadata and normalise API column names → BQ schema names
         for row in records:
             row["report_date"] = report_date
             row["ad_type"] = ad_type
             row["marketplace"] = "SA"
             row["profile_id"] = Config.PROFILE_ID
+
+            # Rename: API name → BQ schema name
+            if "cost" in row:
+                row["spend"] = row.pop("cost")
+            if "campaignBudgetAmount" in row:
+                row["campaignBudget"] = row.pop("campaignBudgetAmount")
+            if "purchases7d" in row:
+                row["orders7d"] = row.pop("purchases7d")
+            if "purchases14d" in row:
+                row["orders14d"] = row.pop("purchases14d")
+            if "startDate" in row:
+                row["date"] = row.pop("startDate")
+
+            # Compute derived metrics (ACOS / ROAS) from raw values
+            spend = row.get("spend") or 0
+            sales7d = row.get("sales7d") or 0
+            sales14d = row.get("sales14d") or 0
+            if "orders7d" in row:   # SP report
+                row["acos7d"] = round(spend / sales7d, 4) if sales7d else None
+                row["roas7d"] = round(sales7d / spend, 4) if spend else None
+            if "orders14d" in row:  # SB / SD report
+                row["acos14d"] = round(spend / sales14d, 4) if sales14d else None
+                row["roas14d"] = round(sales14d / spend, 4) if spend else None
+
         return records
 
     # ── Convenience methods for each ad type ───────────────────────────────
 
+    # Columns requested from the Amazon Ads API v3 (use API names, not BQ schema names).
+    # cost → spend, campaignBudgetAmount → campaignBudget, purchases* → orders*,
+    # startDate → date  (renaming happens in fetch_report).
+    # acos/roas are derived; not returned by the API directly.
     SP_METRICS = [
-        "campaignId", "campaignName", "campaignStatus", "campaignBudget",
+        "campaignId", "campaignName", "campaignStatus", "campaignBudgetAmount",
         "adGroupId", "adGroupName",
-        "impressions", "clicks", "spend", "sales7d", "orders7d",
-        "unitsSoldClicks7d", "acos7d", "roas7d",
-        "date",
+        "impressions", "clicks", "cost", "sales7d", "purchases7d",
+        "unitsSoldClicks7d", "startDate",
     ]
 
     SB_METRICS = [
         "campaignId", "campaignName", "campaignStatus",
         "adGroupId", "adGroupName",
-        "impressions", "clicks", "spend", "sales14d", "orders14d",
-        "unitsSoldClicks14d", "acos14d", "roas14d",
-        "date",
+        "impressions", "clicks", "cost", "sales14d", "purchases14d",
+        "unitsSoldClicks14d", "startDate",
     ]
 
     SD_METRICS = [
         "campaignId", "campaignName", "campaignStatus",
         "adGroupId", "adGroupName",
-        "impressions", "clicks", "spend", "sales14d", "orders14d",
-        "date",
+        "impressions", "clicks", "cost", "sales14d", "purchases14d",
+        "startDate",
     ]
 
     def fetch_sponsored_products(self, report_date: str) -> list[dict]:
