@@ -22,8 +22,9 @@ from config import Config
 
 
 class AmazonAdsClient:
-    POLL_INTERVAL = 10      # seconds between status polls
-    POLL_TIMEOUT = 600      # max seconds to wait for a report
+    POLL_INTERVAL_INITIAL = 10   # seconds for first poll interval
+    POLL_INTERVAL_MAX = 60       # cap for exponential back-off
+    POLL_TIMEOUT = 1800          # max seconds to wait for a report (30 min)
 
     def __init__(self):
         self.auth = AmazonAdsAuth()
@@ -122,18 +123,32 @@ class AmazonAdsClient:
         return request_id
 
     def _poll_report(self, request_id: str) -> str:
-        """Poll until the report is COMPLETED; return the download URL."""
-        deadline = time.time() + self.POLL_TIMEOUT
+        """Poll until the report is COMPLETED; return the download URL.
+
+        Uses exponential back-off for the sleep interval (10 s → 60 s cap) to
+        avoid hammering the API during the longer waits that Amazon Ads reports
+        sometimes require.
+        """
+        start = time.time()
+        deadline = start + self.POLL_TIMEOUT
+        interval = self.POLL_INTERVAL_INITIAL
         while time.time() < deadline:
             status_data = self._get(f"/reporting/reports/{request_id}")
             status = status_data.get("status")
-            logger.debug(f"Report {request_id} status: {status}")
+            elapsed = int(time.time() - start)
+            logger.debug(f"Report {request_id} status: {status} (elapsed {elapsed}s)")
             if status == "COMPLETED":
                 return status_data["url"]
             if status in ("FAILED", "CANCELLED"):
                 raise RuntimeError(f"Report {request_id} ended with status {status}")
-            time.sleep(self.POLL_INTERVAL)
-        raise TimeoutError(f"Report {request_id} did not complete within {self.POLL_TIMEOUT}s")
+            # Sleep for the current interval, but don't overshoot the deadline.
+            sleep_for = min(interval, deadline - time.time())
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            interval = min(interval * 2, self.POLL_INTERVAL_MAX)
+        raise TimeoutError(
+            f"Report {request_id} did not complete within {self.POLL_TIMEOUT}s"
+        )
 
     def _download_report(self, url: str) -> list[dict]:
         """Download and decompress a GZIP_JSON report; return list of records."""
